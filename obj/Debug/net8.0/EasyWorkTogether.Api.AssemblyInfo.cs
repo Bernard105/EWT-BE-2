@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("EasyWorkTogether.Api")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+9542d12cc158ebbc46c050221c4c9251dbbe76e0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+e68eec1a8acb7da6c7250e84d0e130b24b13ca5d")]
 [assembly: System.Reflection.AssemblyProductAttribute("EasyWorkTogether.Api")]
 [assembly: System.Reflection.AssemblyTitleAttribute("EasyWorkTogether.Api")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

@@ -108,6 +108,7 @@ app.UseSwagger(options =>
         };
     });
 });
+
 app.UseSwaggerUI(options =>
 {
     options.SwaggerEndpoint("/swagger/v1/swagger.json", "EasyWorkTogether API v1");
@@ -119,7 +120,12 @@ app.UseCors("FrontendDev");
 app.UseDefaultFiles();
 app.UseStaticFiles();
 
+
+// 🔥 FIX QUAN TRỌNG CHO RENDER (đợi DB sẵn sàng)
+await Task.Delay(5000);
+
 await DbInitializer.InitializeAsync(app.Services);
+
 
 app.MapGet("/api/status", () => Results.Ok(new { Message = "Task backend is running" }))
     .WithName("GetApiStatus")

@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.Extensions.Primitives;
 using Npgsql;
 
@@ -17,10 +18,12 @@ public static class DeploymentSupport
     public static string ResolveConnectionString(IConfiguration configuration)
     {
         var databaseUrl = configuration["DATABASE_URL"] ?? Environment.GetEnvironmentVariable("DATABASE_URL");
+
         if (!string.IsNullOrWhiteSpace(databaseUrl))
             return ConvertDatabaseUrlToNpgsqlConnectionString(databaseUrl.Trim());
 
         var configuredConnectionString = configuration.GetConnectionString("DefaultConnection");
+
         if (!string.IsNullOrWhiteSpace(configuredConnectionString))
             return configuredConnectionString.Trim();
 
@@ -31,6 +34,7 @@ public static class DeploymentSupport
     public static string[] ResolveCorsOrigins(IConfiguration configuration)
     {
         var csvOrigins = configuration["CORS_ALLOWED_ORIGINS"];
+
         if (!string.IsNullOrWhiteSpace(csvOrigins))
         {
             return csvOrigins
@@ -41,6 +45,7 @@ public static class DeploymentSupport
         }
 
         var sectionOrigins = configuration.GetSection("Cors:AllowedOrigins").Get<string[]>();
+
         if (sectionOrigins is { Length: > 0 })
         {
             return sectionOrigins
@@ -68,6 +73,7 @@ public static class DeploymentSupport
         }
 
         var userInfo = uri.UserInfo.Split(':', 2, StringSplitOptions.None);
+
         var builder = new NpgsqlConnectionStringBuilder
         {
             Host = uri.Host,
@@ -76,9 +82,9 @@ public static class DeploymentSupport
             Username = userInfo.Length > 0 ? Uri.UnescapeDataString(userInfo[0]) : string.Empty,
             Password = userInfo.Length > 1 ? Uri.UnescapeDataString(userInfo[1]) : string.Empty,
             Pooling = true,
-            // Safe defaults: prefer SSL (works for both Render internal and external connections).
-            // If the URL already specifies sslmode these defaults are overwritten below.
-            SslMode = SslMode.Prefer,
+
+            // 🔥 FIX QUAN TRỌNG CHO RENDER
+            SslMode = SslMode.Require,
             TrustServerCertificate = true
         };
 
@@ -96,16 +102,17 @@ public static class DeploymentSupport
                     else
                         builder["SSL Mode"] = rawValue;
                     break;
+
                 case "trustservercertificate":
                     if (bool.TryParse(rawValue, out var trustServerCertificate))
                         builder.TrustServerCertificate = trustServerCertificate;
                     break;
+
                 case "sslrootcert":
-                    // Ignore "system" — Npgsql handles that through TrustServerCertificate.
-                    // Any other value is passed through as-is.
                     if (!string.Equals(rawValue, "system", StringComparison.OrdinalIgnoreCase))
                         TryAssign(builder, pair.Key, rawValue);
                     break;
+
                 default:
                     TryAssign(builder, pair.Key, rawValue);
                     break;
@@ -130,6 +137,7 @@ public static class DeploymentSupport
         }
         catch (ArgumentException)
         {
+            // Ignore unknown parameters
         }
     }
 }
