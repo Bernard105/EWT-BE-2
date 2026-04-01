@@ -11,15 +11,22 @@ using Npgsql;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Render dynamic port
 ConfigureRenderPort(builder);
 
+// Forward headers for Render proxy
 builder.Services.Configure<ForwardedHeadersOptions>(options =>
 {
-    options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto | ForwardedHeaders.XForwardedHost;
+    options.ForwardedHeaders =
+        ForwardedHeaders.XForwardedFor |
+        ForwardedHeaders.XForwardedProto |
+        ForwardedHeaders.XForwardedHost;
+
     options.KnownNetworks.Clear();
     options.KnownProxies.Clear();
 });
 
+// JSON format
 builder.Services.ConfigureHttpJsonOptions(options =>
 {
     options.SerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower;
@@ -27,18 +34,19 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 });
 
 builder.Services.AddEndpointsApiExplorer();
+
 builder.Services.AddSwaggerGen(options =>
 {
     options.SwaggerDoc("v1", new OpenApiInfo
     {
         Title = "EasyWorkTogether API",
         Version = "v1",
-        Description = "Backend API for EasyWorkTogether. Import /swagger/v1/swagger.json into Postman to create a collection automatically."
+        Description = "Backend API for EasyWorkTogether"
     });
 
     options.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
     {
-        Description = "Paste the session token returned by /api/login as: Bearer {token}",
+        Description = "Paste token like: Bearer {token}",
         Name = "Authorization",
         In = ParameterLocation.Header,
         Type = SecuritySchemeType.Http,
@@ -62,34 +70,32 @@ builder.Services.AddSwaggerGen(options =>
     });
 });
 
+// Database
 var connectionString = ResolveConnectionString(builder.Configuration);
-
 builder.Services.AddSingleton(NpgsqlDataSource.Create(connectionString));
+
+// Services
 builder.Services.AddSingleton<PasswordService>();
 builder.Services.AddSingleton<AuthService>();
 builder.Services.AddSingleton<EmailService>();
 builder.Services.AddSingleton<RequireSessionFilter>();
+
 builder.Services.AddHttpClient();
+
+
+// ✅ CORS FIX FOR VERCEL
 builder.Services.AddCors(options =>
 {
-    options.AddPolicy("FrontendDev", policy =>
+    options.AddPolicy("AllowFrontend", policy =>
     {
-        var allowedOrigins = ResolveCorsOrigins(builder.Configuration);
-
-        if (allowedOrigins.Length > 0)
-        {
-            policy.WithOrigins(allowedOrigins).AllowAnyHeader().AllowAnyMethod();
-            return;
-        }
-
-        var frontendBaseUrl = builder.Configuration["FRONTEND_BASE_URL"] ?? builder.Configuration["Frontend:BaseUrl"];
-        if (!string.IsNullOrWhiteSpace(frontendBaseUrl) && Uri.TryCreate(frontendBaseUrl, UriKind.Absolute, out var frontendUri))
-        {
-            policy.WithOrigins(frontendUri.GetLeftPart(UriPartial.Authority)).AllowAnyHeader().AllowAnyMethod();
-            return;
-        }
-
-        policy.WithOrigins("http://localhost:5173").AllowAnyHeader().AllowAnyMethod();
+        policy
+            .WithOrigins(
+                "https://ewt-fe-aa9j.vercel.app",
+                "http://localhost:5173"
+            )
+            .AllowAnyHeader()
+            .AllowAnyMethod()
+            .AllowCredentials();
     });
 });
 
@@ -97,14 +103,17 @@ var app = builder.Build();
 
 app.UseForwardedHeaders();
 
+
+// Swagger
 app.UseSwagger(options =>
 {
     options.PreSerializeFilters.Add((swagger, httpRequest) =>
     {
         var serverUrl = $"{httpRequest.Scheme}://{httpRequest.Host.Value}{httpRequest.PathBase.Value}".TrimEnd('/');
+
         swagger.Servers = new List<OpenApiServer>
         {
-            new() { Url = string.IsNullOrWhiteSpace(serverUrl) ? "/" : serverUrl }
+            new() { Url = serverUrl }
         };
     });
 });
@@ -115,30 +124,43 @@ app.UseSwaggerUI(options =>
     options.RoutePrefix = "swagger";
 });
 
+
+// Middleware
 app.UseMiddleware<ExceptionHandlingMiddleware>();
-app.UseCors("FrontendDev");
+
+// ✅ enable cors
+app.UseCors("AllowFrontend");
+
 app.UseDefaultFiles();
 app.UseStaticFiles();
 
 
-// 🔥 FIX QUAN TRỌNG CHO RENDER (đợi DB sẵn sàng)
+// wait for Render DB startup
 await Task.Delay(5000);
 
+// DB init
 await DbInitializer.InitializeAsync(app.Services);
 
 
-app.MapGet("/api/status", () => Results.Ok(new { Message = "Task backend is running" }))
+// Health check
+app.MapGet("/api/status", () =>
+    Results.Ok(new { message = "Task backend is running" }))
     .WithName("GetApiStatus")
     .WithTags("System");
 
-app.MapGet("/health", () => Results.Ok(new { Status = "ok" }))
+app.MapGet("/health", () =>
+    Results.Ok(new { status = "ok" }))
     .WithName("GetHealth")
     .WithTags("System");
 
+
+// API endpoints
 app.MapAuthEndpoints();
 app.MapWorkspaceEndpoints();
 app.MapTaskEndpoints();
 
+
+// fallback if frontend hosted inside backend
 if (File.Exists(Path.Combine(app.Environment.WebRootPath ?? string.Empty, "index.html")))
 {
     app.MapFallbackToFile("index.html");
