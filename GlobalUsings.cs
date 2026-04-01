@@ -1,0 +1,15 @@
+global using System.Net;
+global using System.Net.Http.Headers;
+global using System.Net.Http.Json;
+global using System.Net.Mail;
+global using System.Security.Cryptography;
+global using System.Text;
+global using System.Text.Json;
+global using System.Text.Json.Serialization;
+global using System.Text.RegularExpressions;
+global using Microsoft.AspNetCore.Mvc;
+global using Microsoft.AspNetCore.WebUtilities;
+global using Npgsql;
+global using static EasyWorkTogether.Api.Infrastructure.AppSupport;
+global using EasyWorkTogether.Api.Models;
+global using EasyWorkTogether.Api.Services;

@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: easyworktogether-api
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: ASPNETCORE_ENVIRONMENT
+        value: Production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: easyworktogether-db
+          property: internalConnectionString
+      - key: FRONTEND_BASE_URL
+        sync: false
+      - key: CORS_ALLOWED_ORIGINS
+        sync: false
+
+databases:
+  - name: easyworktogether-db
+    plan: free
+    postgresMajorVersion: "16"
