@@ -347,80 +347,80 @@ public static class AuthEndpoints
     }
 
 
-    // private static async Task<IResult> VerifyEmailAsync(HttpContext http, string token, NpgsqlDataSource db, IConfiguration config)
-    // {
-    //     token = token.Trim();
+    private static async Task<IResult> VerifyEmailAsync(HttpContext http, string token, NpgsqlDataSource db, IConfiguration config)
+    {
+        token = token.Trim();
 
-    //     if (string.IsNullOrWhiteSpace(token))
-    //         return Results.Redirect(QueryHelpers.AddQueryString(BuildLoginUrl(http, config), "verify_error", "Verification token is missing."));
+        if (string.IsNullOrWhiteSpace(token))
+            return Results.Redirect(QueryHelpers.AddQueryString(BuildLoginUrl(http, config), "verify_error", "Verification token is missing."));
 
-    //     var tokenHash = ComputeSha256(token);
+        var tokenHash = ComputeSha256(token);
 
-    //     await using var conn = await db.OpenConnectionAsync();
-    //     await using var tx = await conn.BeginTransactionAsync();
+        await using var conn = await db.OpenConnectionAsync();
+        await using var tx = await conn.BeginTransactionAsync();
 
-    //     const string tokenSql = """
-    //     SELECT id, user_id
-    //     FROM email_verification_tokens
-    //     WHERE token_hash = @token_hash AND used_at IS NULL AND expires_at > NOW()
-    //     FOR UPDATE;
-    //     """;
+        const string tokenSql = """
+        SELECT id, user_id
+        FROM email_verification_tokens
+        WHERE token_hash = @token_hash AND used_at IS NULL AND expires_at > NOW()
+        FOR UPDATE;
+        """;
 
-    //     await using var tokenCmd = new NpgsqlCommand(tokenSql, conn, tx);
-    //     tokenCmd.Parameters.AddWithValue("token_hash", tokenHash);
+        await using var tokenCmd = new NpgsqlCommand(tokenSql, conn, tx);
+        tokenCmd.Parameters.AddWithValue("token_hash", tokenHash);
 
-    //     int verificationTokenId;
-    //     int userId;
+        int verificationTokenId;
+        int userId;
 
-    //     await using (var reader = await tokenCmd.ExecuteReaderAsync())
-    //     {
-    //         if (!await reader.ReadAsync())
-    //             return Results.Redirect(QueryHelpers.AddQueryString(BuildLoginUrl(http, config), "verify_error", "Verification link is invalid or expired."));
+        await using (var reader = await tokenCmd.ExecuteReaderAsync())
+        {
+            if (!await reader.ReadAsync())
+                return Results.Redirect(QueryHelpers.AddQueryString(BuildLoginUrl(http, config), "verify_error", "Verification link is invalid or expired."));
 
-    //         verificationTokenId = reader.GetInt32(0);
-    //         userId = reader.GetInt32(1);
-    //     }
+            verificationTokenId = reader.GetInt32(0);
+            userId = reader.GetInt32(1);
+        }
 
-    //     const string verifyUserSql = """
-    //     UPDATE users
-    //     SET email_verified_at = COALESCE(email_verified_at, NOW()), updated_at = NOW()
-    //     WHERE id = @id;
-    //     """;
+        const string verifyUserSql = """
+        UPDATE users
+        SET email_verified_at = COALESCE(email_verified_at, NOW()), updated_at = NOW()
+        WHERE id = @id;
+        """;
 
-    //     await using (var verifyUserCmd = new NpgsqlCommand(verifyUserSql, conn, tx))
-    //     {
-    //         verifyUserCmd.Parameters.AddWithValue("id", userId);
-    //         await verifyUserCmd.ExecuteNonQueryAsync();
-    //     }
+        await using (var verifyUserCmd = new NpgsqlCommand(verifyUserSql, conn, tx))
+        {
+            verifyUserCmd.Parameters.AddWithValue("id", userId);
+            await verifyUserCmd.ExecuteNonQueryAsync();
+        }
 
-    //     const string useTokenSql = """
-    //     UPDATE email_verification_tokens
-    //     SET used_at = NOW()
-    //     WHERE id = @id;
-    //     """;
+        const string useTokenSql = """
+        UPDATE email_verification_tokens
+        SET used_at = NOW()
+        WHERE id = @id;
+        """;
 
-    //     await using (var useTokenCmd = new NpgsqlCommand(useTokenSql, conn, tx))
-    //     {
-    //         useTokenCmd.Parameters.AddWithValue("id", verificationTokenId);
-    //         await useTokenCmd.ExecuteNonQueryAsync();
-    //     }
+        await using (var useTokenCmd = new NpgsqlCommand(useTokenSql, conn, tx))
+        {
+            useTokenCmd.Parameters.AddWithValue("id", verificationTokenId);
+            await useTokenCmd.ExecuteNonQueryAsync();
+        }
 
-    //     const string invalidateOtherSql = """
-    //     UPDATE email_verification_tokens
-    //     SET used_at = NOW()
-    //     WHERE user_id = @user_id AND used_at IS NULL;
-    //     """;
+        const string invalidateOtherSql = """
+        UPDATE email_verification_tokens
+        SET used_at = NOW()
+        WHERE user_id = @user_id AND used_at IS NULL;
+        """;
 
-    //     await using (var invalidateOtherCmd = new NpgsqlCommand(invalidateOtherSql, conn, tx))
-    //     {
-    //         invalidateOtherCmd.Parameters.AddWithValue("user_id", userId);
-    //         await invalidateOtherCmd.ExecuteNonQueryAsync();
-    //     }
+        await using (var invalidateOtherCmd = new NpgsqlCommand(invalidateOtherSql, conn, tx))
+        {
+            invalidateOtherCmd.Parameters.AddWithValue("user_id", userId);
+            await invalidateOtherCmd.ExecuteNonQueryAsync();
+        }
 
-    //     await tx.CommitAsync();
+        await tx.CommitAsync();
 
-    //     return Results.Redirect(QueryHelpers.AddQueryString(BuildLoginUrl(http, config), "verified", "1"));
-    // }
+        return Results.Redirect(QueryHelpers.AddQueryString(BuildLoginUrl(http, config), "verified", "1"));
+    }
 
 
     private static IResult GetOAuthProvidersAsync(HttpContext http, IConfiguration config)
@@ -617,7 +617,7 @@ public static class AuthEndpoints
             ToIsoString(user.CreatedAt));
 
         return Results.Ok(new ProfileSummaryResponse(
-            profile,va
+            profile,
             BuildAvatarLabel(user.Name, user.Email),
             new ProfileBackendStatusResponse(
                 "Task backend is running",
