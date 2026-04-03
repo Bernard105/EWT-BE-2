@@ -12,7 +12,7 @@ public static class AuthEndpoints
         publicApi.MapPost("/login", LoginAsync);
         publicApi.MapPost("/forgot-password", ForgotPasswordAsync);
         publicApi.MapPost("/reset-password", ResetPasswordAsync);
-        publicApi.MapGet("/verify-email", VerifyEmailAsync); // kept but does nothing (redirects)
+        publicApi.MapGet("/verify-email", VerifyEmailAsync);
         publicApi.MapGet("/oauth/providers", GetOAuthProvidersAsync);
         publicApi.MapGet("/oauth/{provider}/start", StartOAuthAsync);
         publicApi.MapGet("/oauth/{provider}/callback", CompleteOAuthAsync);
@@ -51,24 +51,23 @@ public static class AuthEndpoints
             return Results.BadRequest(new ErrorResponse(passwordError));
 
         var passwordHash = passwordService.HashPassword(request.Password ?? string.Empty);
-        
-        // Email verification is disabled – set verified immediately
-        var emailVerifiedAt = DateTime.UtcNow;
+        var verificationToken = CreateUrlSafeToken(32);
+        var verificationTokenHash = ComputeSha256(verificationToken);
+        var verificationExpiresAt = DateTime.UtcNow.AddHours(24);
 
         await using var conn = await db.OpenConnectionAsync();
         await using var tx = await conn.BeginTransactionAsync();
 
         const string sql = """
-            INSERT INTO users (email, password_hash, name, email_verified_at)
-            VALUES (@email, @password_hash, @name, @email_verified_at)
-            RETURNING id, email, name, created_at;
-            """;
+        INSERT INTO users (email, password_hash, name)
+        VALUES (@email, @password_hash, @name)
+        RETURNING id, email, name, created_at;
+        """;
 
         await using var cmd = new NpgsqlCommand(sql, conn, tx);
         cmd.Parameters.AddWithValue("email", email);
         cmd.Parameters.AddWithValue("password_hash", passwordHash);
         cmd.Parameters.AddWithValue("name", name);
-        cmd.Parameters.AddWithValue("email_verified_at", emailVerifiedAt);
 
         try
         {
@@ -85,14 +84,31 @@ public static class AuthEndpoints
                     ToIsoString(reader.GetDateTime(3)));
             }
 
+            const string verificationSql = """
+            INSERT INTO email_verification_tokens (user_id, token_hash, expires_at)
+            VALUES (@user_id, @token_hash, @expires_at);
+            """;
+
+            await using (var verificationCmd = new NpgsqlCommand(verificationSql, conn, tx))
+            {
+                verificationCmd.Parameters.AddWithValue("user_id", response.Id);
+                verificationCmd.Parameters.AddWithValue("token_hash", verificationTokenHash);
+                verificationCmd.Parameters.AddWithValue("expires_at", verificationExpiresAt);
+                await verificationCmd.ExecuteNonQueryAsync();
+            }
+
             await tx.CommitAsync();
 
-            // No verification email is sent
+            var verificationUrl = BuildVerifyEmailUrl(http, verificationToken);
+            var emailSent = await emailService.TrySendEmailVerificationAsync(email, name, verificationUrl, verificationExpiresAt);
+
             return Results.Created($"/api/users/{response.Id}", new RegisterResponse(
-                "Account created successfully. You can now log in.",
-                true,    // emailSent = true (no need to show token)
-                null,    // verificationToken
-                null,    // verificationUrl
+                emailSent
+                    ? "Account created. Please check your email to verify your account before logging in."
+                    : "Account created. SMTP is not configured or email sending failed, so the verification link is returned directly.",
+                emailSent,
+                emailSent ? null : verificationToken,
+                emailSent ? null : verificationUrl,
                 response));
         }
         catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.UniqueViolation)
@@ -110,10 +126,10 @@ public static class AuthEndpoints
         await using var conn = await db.OpenConnectionAsync();
 
         const string userSql = """
-            SELECT id, email, name, password_hash, email_verified_at
-            FROM users
-            WHERE email = @email;
-            """;
+        SELECT id, email, name, password_hash, email_verified_at
+        FROM users
+        WHERE email = @email;
+        """;
 
         await using var userCmd = new NpgsqlCommand(userSql, conn);
         userCmd.Parameters.AddWithValue("email", email);
@@ -127,13 +143,13 @@ public static class AuthEndpoints
         var userEmail = reader.GetString(1);
         var userName = reader.GetString(2);
         var passwordHash = reader.GetString(3);
-        // Email verification check is removed – users are always considered verified
-        // var emailVerifiedAt = reader.IsDBNull(4) ? (DateTime?)null : reader.GetDateTime(4);
+        var emailVerifiedAt = reader.IsDBNull(4) ? (DateTime?)null : reader.GetDateTime(4);
 
         if (!passwordService.VerifyPassword(password, passwordHash))
             return Results.BadRequest(new ErrorResponse("Invalid email or password"));
 
-        // No email verification required
+        if (emailVerifiedAt is null)
+            return Results.Json(new ErrorResponse("Please verify your email before logging in."), statusCode: StatusCodes.Status403Forbidden);
 
         await reader.CloseAsync();
 
@@ -141,9 +157,9 @@ public static class AuthEndpoints
         var expiresAt = GetPersistentSessionExpiryUtc();
 
         const string sessionSql = """
-            INSERT INTO sessions (token, user_id, expires_at)
-            VALUES (@token, @user_id, @expires_at);
-            """;
+        INSERT INTO sessions (token, user_id, expires_at)
+        VALUES (@token, @user_id, @expires_at);
+        """;
 
         await using var sessionCmd = new NpgsqlCommand(sessionSql, conn);
         sessionCmd.Parameters.AddWithValue("token", sessionToken);
@@ -167,10 +183,10 @@ public static class AuthEndpoints
         await using var conn = await db.OpenConnectionAsync();
 
         const string userSql = """
-            SELECT id
-            FROM users
-            WHERE email = @email;
-            """;
+        SELECT id
+        FROM users
+        WHERE email = @email;
+        """;
 
         await using var userCmd = new NpgsqlCommand(userSql, conn);
         userCmd.Parameters.AddWithValue("email", email);
@@ -193,10 +209,10 @@ public static class AuthEndpoints
         await using var tx = await conn.BeginTransactionAsync();
 
         const string invalidateSql = """
-            UPDATE password_reset_tokens
-            SET used_at = NOW()
-            WHERE user_id = @user_id AND used_at IS NULL;
-            """;
+        UPDATE password_reset_tokens
+        SET used_at = NOW()
+        WHERE user_id = @user_id AND used_at IS NULL;
+        """;
 
         await using (var invalidateCmd = new NpgsqlCommand(invalidateSql, conn, tx))
         {
@@ -205,9 +221,9 @@ public static class AuthEndpoints
         }
 
         const string insertSql = """
-            INSERT INTO password_reset_tokens (user_id, token, token_hash, expires_at)
-            VALUES (@user_id, @token, @token_hash, @expires_at);
-            """;
+        INSERT INTO password_reset_tokens (user_id, token, token_hash, expires_at)
+        VALUES (@user_id, @token, @token_hash, @expires_at);
+        """;
 
         await using (var insertCmd = new NpgsqlCommand(insertSql, conn, tx))
         {
@@ -253,13 +269,13 @@ public static class AuthEndpoints
         await using var tx = await conn.BeginTransactionAsync();
 
         const string tokenSql = """
-            SELECT id, user_id
-            FROM password_reset_tokens
-            WHERE (token_hash = @token_hash OR token = @raw_token)
-              AND used_at IS NULL
-              AND expires_at > NOW()
-            FOR UPDATE;
-            """;
+        SELECT id, user_id
+        FROM password_reset_tokens
+        WHERE (token_hash = @token_hash OR token = @raw_token)
+          AND used_at IS NULL
+          AND expires_at > NOW()
+        FOR UPDATE;
+        """;
 
         await using var tokenCmd = new NpgsqlCommand(tokenSql, conn, tx);
         tokenCmd.Parameters.AddWithValue("token_hash", tokenHash);
@@ -278,10 +294,10 @@ public static class AuthEndpoints
         }
 
         const string updateUserSql = """
-            UPDATE users
-            SET password_hash = @password_hash, updated_at = NOW()
-            WHERE id = @id;
-            """;
+        UPDATE users
+        SET password_hash = @password_hash, updated_at = NOW()
+        WHERE id = @id;
+        """;
 
         await using (var updateUserCmd = new NpgsqlCommand(updateUserSql, conn, tx))
         {
@@ -291,10 +307,10 @@ public static class AuthEndpoints
         }
 
         const string useTokenSql = """
-            UPDATE password_reset_tokens
-            SET used_at = NOW()
-            WHERE id = @id;
-            """;
+        UPDATE password_reset_tokens
+        SET used_at = NOW()
+        WHERE id = @id;
+        """;
 
         await using (var useTokenCmd = new NpgsqlCommand(useTokenSql, conn, tx))
         {
@@ -303,10 +319,10 @@ public static class AuthEndpoints
         }
 
         const string invalidateOtherSql = """
-            UPDATE password_reset_tokens
-            SET used_at = NOW()
-            WHERE user_id = @user_id AND used_at IS NULL;
-            """;
+        UPDATE password_reset_tokens
+        SET used_at = NOW()
+        WHERE user_id = @user_id AND used_at IS NULL;
+        """;
 
         await using (var invalidateOtherCmd = new NpgsqlCommand(invalidateOtherSql, conn, tx))
         {
@@ -315,9 +331,9 @@ public static class AuthEndpoints
         }
 
         const string deleteSessionsSql = """
-            DELETE FROM sessions
-            WHERE user_id = @user_id;
-            """;
+        DELETE FROM sessions
+        WHERE user_id = @user_id;
+        """;
 
         await using (var deleteSessionsCmd = new NpgsqlCommand(deleteSessionsSql, conn, tx))
         {
@@ -330,13 +346,82 @@ public static class AuthEndpoints
         return Results.Ok(new MessageResponse("Password reset successfully"));
     }
 
-    // Verify email endpoint – now always redirects with success (verification is disabled)
-    private static async Task<IResult> VerifyEmailAsync(HttpContext http, string token, NpgsqlDataSource db, IConfiguration config)
-    {
-        // Email verification is disabled – just redirect to login with a success flag
-        // Optionally, you could also delete the entire endpoint from MapAuthEndpoints.
-        return Results.Redirect(QueryHelpers.AddQueryString(BuildLoginUrl(http, config), "verified", "1"));
-    }
+
+    // private static async Task<IResult> VerifyEmailAsync(HttpContext http, string token, NpgsqlDataSource db, IConfiguration config)
+    // {
+    //     token = token.Trim();
+
+    //     if (string.IsNullOrWhiteSpace(token))
+    //         return Results.Redirect(QueryHelpers.AddQueryString(BuildLoginUrl(http, config), "verify_error", "Verification token is missing."));
+
+    //     var tokenHash = ComputeSha256(token);
+
+    //     await using var conn = await db.OpenConnectionAsync();
+    //     await using var tx = await conn.BeginTransactionAsync();
+
+    //     const string tokenSql = """
+    //     SELECT id, user_id
+    //     FROM email_verification_tokens
+    //     WHERE token_hash = @token_hash AND used_at IS NULL AND expires_at > NOW()
+    //     FOR UPDATE;
+    //     """;
+
+    //     await using var tokenCmd = new NpgsqlCommand(tokenSql, conn, tx);
+    //     tokenCmd.Parameters.AddWithValue("token_hash", tokenHash);
+
+    //     int verificationTokenId;
+    //     int userId;
+
+    //     await using (var reader = await tokenCmd.ExecuteReaderAsync())
+    //     {
+    //         if (!await reader.ReadAsync())
+    //             return Results.Redirect(QueryHelpers.AddQueryString(BuildLoginUrl(http, config), "verify_error", "Verification link is invalid or expired."));
+
+    //         verificationTokenId = reader.GetInt32(0);
+    //         userId = reader.GetInt32(1);
+    //     }
+
+    //     const string verifyUserSql = """
+    //     UPDATE users
+    //     SET email_verified_at = COALESCE(email_verified_at, NOW()), updated_at = NOW()
+    //     WHERE id = @id;
+    //     """;
+
+    //     await using (var verifyUserCmd = new NpgsqlCommand(verifyUserSql, conn, tx))
+    //     {
+    //         verifyUserCmd.Parameters.AddWithValue("id", userId);
+    //         await verifyUserCmd.ExecuteNonQueryAsync();
+    //     }
+
+    //     const string useTokenSql = """
+    //     UPDATE email_verification_tokens
+    //     SET used_at = NOW()
+    //     WHERE id = @id;
+    //     """;
+
+    //     await using (var useTokenCmd = new NpgsqlCommand(useTokenSql, conn, tx))
+    //     {
+    //         useTokenCmd.Parameters.AddWithValue("id", verificationTokenId);
+    //         await useTokenCmd.ExecuteNonQueryAsync();
+    //     }
+
+    //     const string invalidateOtherSql = """
+    //     UPDATE email_verification_tokens
+    //     SET used_at = NOW()
+    //     WHERE user_id = @user_id AND used_at IS NULL;
+    //     """;
+
+    //     await using (var invalidateOtherCmd = new NpgsqlCommand(invalidateOtherSql, conn, tx))
+    //     {
+    //         invalidateOtherCmd.Parameters.AddWithValue("user_id", userId);
+    //         await invalidateOtherCmd.ExecuteNonQueryAsync();
+    //     }
+
+    //     await tx.CommitAsync();
+
+    //     return Results.Redirect(QueryHelpers.AddQueryString(BuildLoginUrl(http, config), "verified", "1"));
+    // }
+
 
     private static IResult GetOAuthProvidersAsync(HttpContext http, IConfiguration config)
     {
@@ -498,9 +583,9 @@ public static class AuthEndpoints
         await using var conn = await db.OpenConnectionAsync();
 
         const string sql = """
-            DELETE FROM sessions
-            WHERE token = @token;
-            """;
+        DELETE FROM sessions
+        WHERE token = @token;
+        """;
 
         await using var cmd = new NpgsqlCommand(sql, conn);
         cmd.Parameters.AddWithValue("token", token.Value);
@@ -508,6 +593,8 @@ public static class AuthEndpoints
 
         return Results.NoContent();
     }
+
+
 
     private static IResult GetProfileAsync(HttpContext http)
     {
@@ -530,7 +617,7 @@ public static class AuthEndpoints
             ToIsoString(user.CreatedAt));
 
         return Results.Ok(new ProfileSummaryResponse(
-            profile,
+            profile,va
             BuildAvatarLabel(user.Name, user.Email),
             new ProfileBackendStatusResponse(
                 "Task backend is running",
@@ -551,11 +638,11 @@ public static class AuthEndpoints
         await using var conn = await db.OpenConnectionAsync();
 
         const string sql = """
-            UPDATE users
-            SET name = @name, updated_at = NOW()
-            WHERE id = @id
-            RETURNING id, email, name, created_at;
-            """;
+        UPDATE users
+        SET name = @name, updated_at = NOW()
+        WHERE id = @id
+        RETURNING id, email, name, created_at;
+        """;
 
         await using var cmd = new NpgsqlCommand(sql, conn);
         cmd.Parameters.AddWithValue("name", newName);
@@ -585,10 +672,10 @@ public static class AuthEndpoints
         await using var tx = await conn.BeginTransactionAsync();
 
         const string getSql = """
-            SELECT password_hash
-            FROM users
-            WHERE id = @id;
-            """;
+        SELECT password_hash
+        FROM users
+        WHERE id = @id;
+        """;
 
         await using var getCmd = new NpgsqlCommand(getSql, conn, tx);
         getCmd.Parameters.AddWithValue("id", currentUser.Id);
@@ -598,10 +685,10 @@ public static class AuthEndpoints
             return Results.BadRequest(new ErrorResponse("Old password is incorrect"));
 
         const string updateSql = """
-            UPDATE users
-            SET password_hash = @password_hash, updated_at = NOW()
-            WHERE id = @id;
-            """;
+        UPDATE users
+        SET password_hash = @password_hash, updated_at = NOW()
+        WHERE id = @id;
+        """;
 
         await using var updateCmd = new NpgsqlCommand(updateSql, conn, tx);
         updateCmd.Parameters.AddWithValue("password_hash", passwordService.HashPassword(request.NewPassword ?? string.Empty));
@@ -609,9 +696,9 @@ public static class AuthEndpoints
         await updateCmd.ExecuteNonQueryAsync();
 
         const string deleteSessionsSql = """
-            DELETE FROM sessions
-            WHERE user_id = @user_id;
-            """;
+        DELETE FROM sessions
+        WHERE user_id = @user_id;
+        """;
 
         await using var deleteCmd = new NpgsqlCommand(deleteSessionsSql, conn, tx);
         deleteCmd.Parameters.AddWithValue("user_id", currentUser.Id);
